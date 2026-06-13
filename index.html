@@ -117,6 +117,7 @@ h1 {
   border-radius: 18px;
   background: var(--panel);
   box-shadow: var(--shadow), inset 0 1px 0 #fff;
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -164,7 +165,9 @@ h1 {
   overflow: hidden;
   outline: none;
   cursor: ew-resize;
+  -ms-touch-action: none;
   touch-action: none;
+  -webkit-user-select: none;
   user-select: none;
   background:
     radial-gradient(circle at 50% 0, #fff, transparent 45%),
@@ -881,9 +884,17 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 function createSvgElement(tag, attributes = {}, text = "") {
   const node = document.createElementNS(SVG_NS, tag);
-  Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, value));
+  Object.keys(attributes).forEach(function (key) {
+    node.setAttribute(key, attributes[key]);
+  });
   if (text) node.textContent = text;
   return node;
+}
+
+function clearElement(node) {
+  while (node.firstChild) {
+    node.removeChild(node.firstChild);
+  }
 }
 
 function formatUnits(units) {
@@ -899,7 +910,7 @@ function clampUnits(units) {
  * 为了在 50 mm 量程内保持可读性，只显示靠近微分筒边缘的局部刻度。
  */
 function renderMainScale() {
-  elements.mainScale.replaceChildren();
+  clearElement(elements.mainScale);
   const valueMm = state.valueUnits / 1000;
   const pixelsPerMm = 9.2;
   const edgeX = 655;
@@ -940,8 +951,8 @@ function renderMainScale() {
  * 屏幕上只绘制基准线附近的刻度，让数字随着读数上下滚动。
  */
 function renderThimbleScale() {
-  elements.thimbleScale.replaceChildren();
-  elements.thimbleStripes.replaceChildren();
+  clearElement(elements.thimbleScale);
+  clearElement(elements.thimbleStripes);
 
   const division = state.valueUnits % 50;
   const spacing = 7.1;
@@ -970,7 +981,7 @@ function renderThimbleScale() {
         "font-size": "14",
         "font-family": "Consolas, monospace",
         "font-weight": "700"
-      }, String(labelValue).padStart(2, "0")));
+      }, labelValue < 10 ? `0${labelValue}` : String(labelValue)));
     }
   }
 
@@ -1007,7 +1018,11 @@ function getReadingParts() {
 function renderReadout() {
   const shouldConceal = state.quizMode && !state.answerRevealed;
   elements.liveReading.textContent = shouldConceal ? "请读刻度" : `${formatUnits(state.valueUnits)} mm`;
-  elements.liveReading.classList.toggle("concealed", shouldConceal);
+  if (shouldConceal) {
+    elements.liveReading.classList.add("concealed");
+  } else {
+    elements.liveReading.classList.remove("concealed");
+  }
 }
 
 function renderInstrument() {
@@ -1114,14 +1129,20 @@ function showAnalysis() {
   elements.formulaText.textContent =
     `${formatUnits(parts.totalUnits)} mm = ${formatUnits(parts.mainUnits)} mm + ${formatUnits(parts.thimbleUnits)} mm`;
   elements.analysisPanel.hidden = false;
-  elements.analysisPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    elements.analysisPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    elements.analysisPanel.scrollIntoView();
+  }
 }
 
 function beginDrag(clientX, pointerId) {
   state.dragging = true;
   state.dragStartX = clientX;
   state.dragStartUnits = state.valueUnits;
-  elements.stage.setPointerCapture(pointerId);
+  if (pointerId !== undefined && elements.stage.setPointerCapture) {
+    elements.stage.setPointerCapture(pointerId);
+  }
   elements.stage.classList.add("dragging");
 }
 
@@ -1134,26 +1155,56 @@ function moveDrag(clientX) {
 function endDrag(pointerId) {
   if (!state.dragging) return;
   state.dragging = false;
-  if (elements.stage.hasPointerCapture(pointerId)) {
+  if (
+    pointerId !== undefined &&
+    elements.stage.hasPointerCapture &&
+    elements.stage.hasPointerCapture(pointerId)
+  ) {
     elements.stage.releasePointerCapture(pointerId);
   }
   elements.stage.classList.remove("dragging");
 }
 
-elements.stage.addEventListener("pointerdown", (event) => {
-  if (event.button !== undefined && event.button !== 0) return;
-  event.preventDefault();
-  elements.stage.focus({ preventScroll: true });
-  beginDrag(event.clientX, event.pointerId);
-});
+if (window.PointerEvent) {
+  elements.stage.addEventListener("pointerdown", (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    elements.stage.focus();
+    beginDrag(event.clientX, event.pointerId);
+  });
 
-elements.stage.addEventListener("pointermove", (event) => {
-  event.preventDefault();
-  moveDrag(event.clientX);
-});
+  elements.stage.addEventListener("pointermove", (event) => {
+    event.preventDefault();
+    moveDrag(event.clientX);
+  });
 
-elements.stage.addEventListener("pointerup", (event) => endDrag(event.pointerId));
-elements.stage.addEventListener("pointercancel", (event) => endDrag(event.pointerId));
+  elements.stage.addEventListener("pointerup", (event) => endDrag(event.pointerId));
+  elements.stage.addEventListener("pointercancel", (event) => endDrag(event.pointerId));
+} else {
+  // 兼容不支持 Pointer Events 的旧版 iOS Safari。
+  elements.stage.addEventListener("touchstart", (event) => {
+    if (!event.touches.length) return;
+    event.preventDefault();
+    beginDrag(event.touches[0].clientX);
+  }, { passive: false });
+
+  elements.stage.addEventListener("touchmove", (event) => {
+    if (!event.touches.length) return;
+    event.preventDefault();
+    moveDrag(event.touches[0].clientX);
+  }, { passive: false });
+
+  elements.stage.addEventListener("touchend", () => endDrag());
+  elements.stage.addEventListener("touchcancel", () => endDrag());
+
+  elements.stage.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    beginDrag(event.clientX);
+  });
+  window.addEventListener("mousemove", (event) => moveDrag(event.clientX));
+  window.addEventListener("mouseup", () => endDrag());
+}
 
 elements.stage.addEventListener("wheel", (event) => {
   event.preventDefault();
